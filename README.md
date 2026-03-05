@@ -8,16 +8,16 @@ This repository contains the official Python implementation for the paper **"Cal
 ## Description
 
 Linkage disequilibrium (LD) is commonly measured by the squared correlation ($r^2$) between pairs of genetic variants.
-A key issue is that the standard sample estimator is **upward biased** for small sample sizes, especially when true LD is near zero, and no estimator can be exactly unbiased because $r^2$ is a ratio of random quantities.
+A key issue is that the standard sample estimator is **upward biased** for small sample sizes, especially when true LD is near zero.
 
 This software, **SCoLD**, introduces a simulation-based, model-free calibration procedure to improve LD estimation at small sample sizes (e.g., $n=5,10,25$).
 The method uses forward simulation to generate genotype pairs under known allele frequencies and true population $r^2$, then performs an inverse mapping from observed estimates to calibrated values; an optional second step applies a mean-centering correction under independence.
 
 ## Features
 
-- **Multiple $r^2$ estimators:** Includes the standard sample estimator (`r2T`) and several sample-size-aware alternatives such as Bulik–Sullivan-style and Ragsdale–Gravel-style estimators (as implemented in this codebase/notebook).
+- **Multiple $r^2$ estimators:** Includes the standard sample estimator (`r2T`) and several sample-size-aware alternatives such as Bulik–Sullivan (https://doi.org/10.1038/ng.3211) and Ragsdale and Gravel (https://doi.org/10.1093/molbev/msz265) estimators (implemented in this codebase/notebook).
 - **Non-parametric calibration:** Precomputes calibration curves on a grid of allele-frequency pairs and true $r^2$ values using repeated genotype simulation, then uses inverse interpolation for fast calibration at runtime.
-- **Two-step variants:** Supports “general” calibration, “independence” (BS-style) calibration, and “mean-correction” calibration; produces calibrated estimator functions like `r2Tc`, `r2Tic`, `r2Tmc` and analogs for other base estimators.
+- **Two-step variants:** Supports “general” calibration, “independence” calibration, and “mean-correction” calibration; produces calibrated estimator functions like `r2Tc`, `r2Tic`, `r2Tmc` and analogs for other base estimators.
 - **Downstream evaluation:** Includes bootstrap experiments for RMSE/bias/variance by distance bin and LD pruning evaluation using F1 score, mirroring the analyses described in the paper.
 
 
