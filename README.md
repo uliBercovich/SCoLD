@@ -100,16 +100,16 @@ The calibration functions fall back to the uncalibrated estimator when a model i
 The paper and notebooks evaluate calibration on:
 
 1. **1000 Genomes Project (CEU, chr22):** Accessed via `magenpy` in the analysis notebooks.
-2. **Simulated data (AFR demographic model):** Generated with `stdpopsim`/`msprime` for chromosome 22 regions and filtered by MAF, as in the notebooks.
+2. **Simulated data (AFR demographic model):** Generated with `stdpopsim`/`msprime` for chromosome 22 regions and filtered by MAF.
 
 ## Reproducing Figures from the Paper
 
-The `notebooks/` directory contains Jupyter notebooks to reproduce the main results, including:
+The `paper/` directory contains Jupyter notebooks to reproduce the main results, including:
 
 - RMSE/bias/variance by distance bins across sample sizes.
 - LD pruning evaluation (classification via F1 score) across LD thresholds.
 
-**Note:** You will need to update any `BASE_PATH` / data-path variables in the notebooks to point to your local data locations.
+**Note:** This is a working progress.
 
 ## Citation
 
