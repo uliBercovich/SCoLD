@@ -15,9 +15,9 @@ The method uses forward simulation to generate genotype pairs under known allele
 
 ## Features
 
-- **Multiple $r^2$ estimators:** Includes the standard sample estimator (`r2T`) and several sample-size-aware alternatives such as Bulik–Sullivan (https://doi.org/10.1038/ng.3211) and Ragsdale and Gravel (https://doi.org/10.1093/molbev/msz265) estimators (implemented in this codebase/notebook).
+- **Multiple $r^2$ estimators:** Includes the standard sample estimator (`r2`) and several sample-size-aware alternatives: Bulik–Sullivan (`r2_BS`, https://doi.org/10.1038/ng.3211), Ragsdale and Gravel (`r2_Rag`, https://doi.org/10.1093/molbev/msz265), and a supplementary estimator (`r2_Supp`).
 - **Non-parametric calibration:** Precomputes calibration curves on a grid of allele-frequency pairs and true $r^2$ values using repeated genotype simulation, then uses inverse interpolation for fast calibration at runtime.
-- **Two-step variants:** Supports “general” calibration, “independence” calibration, and “mean-correction” calibration; produces calibrated estimator functions like `r2Tc`, `r2Tic`, `r2Tmc` and analogs for other base estimators.
+- **Two-step calibration:** Supports inverse-regression calibration (`cal`), independence calibration (`indep`), and their combination (`cal` → `indep`); produces estimator functions like `r2_cal`, `r2_indep`, `r2_cal_indep` and analogs for other base estimators (e.g. `r2_BS_cal`, `r2_BS_cal_indep`).
 - **Downstream evaluation:** Includes bootstrap experiments for RMSE/bias/variance by distance bin and LD pruning evaluation using F1 score, mirroring the analyses described in the paper.
 
 
@@ -61,10 +61,10 @@ import numpy as np
 
 # Example: dictionary of estimators (names are used as keys downstream)
 r2_estimators = {
-    "r2T": r2T,
-    "r2BS": r2BS,
-    "r2Rag": r2Rag,
-    "r2Ber": r2Ber,
+    "r2":      r2,
+    "r2_BS":   r2_BS,
+    "r2_Rag":  r2_Rag,
+    "r2_Supp": r2_Supp,
 }
 
 # 1) Build calibration models for selected sample sizes
@@ -74,23 +74,23 @@ r2_grid = np.linspace(0, 1, 21)
 # This produces a nested dict keyed by estimator -> n -> (MAC-pair) -> (true r2 bin -> mean observed)
 master_models = {}
 for n in n_values:
-    models_for_n = buildcalibrationmodels(
+    models_for_n = build_calibration_models(
         n=n,
-        Nrep=5000,
-        r2grid=r2_grid,
-        estimatorsdict=r2_estimators,
-        njobs=-1,
+        N_replicates=5000,
+        r2_grid_to_model=r2_grid,
+        estimators_to_calibrate=r2_estimators,
+        n_jobs=-1,
     )
     for name, model in models_for_n.items():
         master_models.setdefault(name, {})[n] = model
 
-# 2) Create calibrated estimators (general / independence / mean-correction)
-r2Tc  = createcalibratedestimator(r2T,  "r2T",  master_models, "general")
-r2Tic = createcalibratedestimator(r2T,  "r2T",  master_models, "independence")
-r2Tmc = createcalibratedestimator(r2T,  "r2T",  master_models, "meancorrection")
+# 2) Create calibrated estimators
+r2_cal       = create_calibrated_estimator(r2, "r2", master_models, "cal")
+r2_indep     = create_calibrated_estimator(r2, "r2", master_models, "indep")
+r2_cal_indep = create_calibrated_estimator(r2_cal, "r2_cal", master_models, "indep")
 
 # 3) Apply to a genotype pair matrix G of shape (n_individuals, 2)
-# r2_est = r2Tc(G)
+# r2_est = r2_cal(G)
 ```
 
 The calibration functions fall back to the uncalibrated estimator when a model is not available for a given sample size / MAC bin.[^19_2]

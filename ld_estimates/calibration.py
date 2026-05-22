@@ -10,7 +10,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 
 
-CalibrationType = Literal["general", "independence", "meancorrection"]
+CalibrationType = Literal["cal", "indep"]
 EstimatorFn = Callable[[np.ndarray], float]  # expects G with shape (n, 2) for a SNP pair
 
 
@@ -195,19 +195,13 @@ def apply_calibration(
     x_mean = x_mean[order]
     y_true = y_true[order]
 
-    if calibration_type == "general":
+    if calibration_type == "cal":
         calibrated = float(np.interp(r2obs, x_mean, y_true))
         return max(0.0, calibrated)
 
-    if calibration_type == "independence":
-        # your notebook uses the first point as an "error term" under independence [file:25]
+    if calibration_type == "indep":
         err = float(x_mean[0])
         return float(1.0 - (1.0 - r2obs) / (1.0 - err))
-
-    if calibration_type == "meancorrection":
-        mean_error = x_mean - y_true
-        pred_err = float(np.interp(r2obs, x_mean, mean_error))
-        return float(r2obs - pred_err)
 
     raise ValueError(f"Unknown calibration_type: {calibration_type}")
 
@@ -221,7 +215,7 @@ def create_calibrated_estimator(
     """
     Returns a function G -> calibrated r2, using master_model[estimator_name][n].
     """
-    suffix = {"general": "c", "independence": "ic", "meancorrection": "mc"}[calibration_type]
+    suffix = {"cal": "_cal", "indep": "_indep"}[calibration_type]
     new_name = f"{estimator_name}{suffix}"
 
     def calibrated(G: np.ndarray) -> float:

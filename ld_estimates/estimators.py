@@ -10,7 +10,7 @@ def _clip01(x: float) -> float:
     return float(min(max(x, 0.0), 1.0))
 
 
-def r2_T(G: np.ndarray) -> float:
+def r2(G: np.ndarray) -> float:
     """
     Naive sample r^2 = corr(G[:,0], G[:,1])^2 using numpy.
     Expects G shape (n,2) with entries in {0,1,2}.
@@ -24,8 +24,8 @@ def r2_BS(G: np.ndarray, cut: bool = False) -> float:
     Bulik-Sullivan correction: r2 - (1-r2)/(n-2) (as in your notebook).
     """
     n = int(G.shape[0])
-    r2 = r2_T(G)
-    out = r2 - (1.0 - r2) / (n - 2)
+    r2_val = r2(G)
+    out = r2_val - (1.0 - r2_val) / (n - 2)
     return _clip01(out) if cut else float(out)
 
 
@@ -99,9 +99,9 @@ def r2_Rag(G: np.ndarray, cut: bool = False, nan_as_one: bool = True) -> float:
     return _clip01(out) if cut else float(out)
 
 
-def r2_Ber(G: np.ndarray, cut: bool = False) -> float:
+def r2_Supp(G: np.ndarray, cut: bool = False) -> float:
     """
-    r2Ber estimator from the notebook (stable/private-data motivated).
+    Supplementary estimator (stable/private-data motivated).
     """
     n = int(G.shape[0])
     mu = G.mean(axis=0)
