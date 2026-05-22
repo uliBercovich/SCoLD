@@ -79,6 +79,7 @@ for n in n_values:
         N_replicates=5000,
         r2_grid_to_model=r2_grid,
         estimators_to_calibrate=r2_estimators,
+        ploidy=2,   # 1 for pseudohaploid/haploid, 2 for diploid, 4 for tetraploid, etc.
         n_jobs=-1,
     )
     for name, model in models_for_n.items():
