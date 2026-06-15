@@ -121,3 +121,44 @@ def r2_Supp(G: np.ndarray, cut: bool = False) -> float:
         return 1.0
     out = 1.0 + numerator / denominator
     return _clip01(out) if cut else float(out)
+
+
+# ---------------------------------------------------------------------------
+# Batch estimators: G_batch has shape (Nrep, n, 2), return shape (Nrep,)
+# ---------------------------------------------------------------------------
+
+def r2_batch(G_batch: np.ndarray) -> np.ndarray:
+    """Vectorized r² over (Nrep, n, 2). Returns NaN where variance is zero."""
+    X = G_batch[:, :, 0] - G_batch[:, :, 0].mean(axis=1, keepdims=True)
+    Y = G_batch[:, :, 1] - G_batch[:, :, 1].mean(axis=1, keepdims=True)
+    num = (X * Y).sum(axis=1) ** 2
+    den = (X ** 2).sum(axis=1) * (Y ** 2).sum(axis=1)
+    return np.where(den > 1e-8, num / den, np.nan)
+
+
+def r2_BS_batch(G_batch: np.ndarray, cut: bool = False) -> np.ndarray:
+    """Vectorized Bulik-Sullivan correction over (Nrep, n, 2)."""
+    n = G_batch.shape[1]
+    out = r2_batch(G_batch)
+    out = out - (1.0 - out) / (n - 2)
+    return np.clip(out, 0.0, 1.0) if cut else out
+
+
+def r2_Supp_batch(G_batch: np.ndarray, cut: bool = False) -> np.ndarray:
+    """Vectorized supplementary estimator over (Nrep, n, 2)."""
+    n = G_batch.shape[1]
+    mu  = G_batch.mean(axis=1)                                    # (Nrep, 2)
+    G_c = G_batch - mu[:, None, :]                               # (Nrep, n, 2)
+    cov = np.einsum('bni,bnj->bij', G_c, G_c) / (n - 1)        # (Nrep, 2, 2)
+    aux  = cov / 2.0
+    sig2 = np.diagonal(aux, axis1=1, axis2=2)                   # (Nrep, 2)
+    D    = aux[:, 0, 1]                                          # (Nrep,)
+
+    numerator = D**2 - sig2[:, 0] * sig2[:, 1]
+    denominator = (
+        -(1.0 / n) * D**2
+        + ((n - 1) / n) * sig2[:, 0] * sig2[:, 1]
+        - ((n - 2) / (2 * (n - 1))) * D * (mu[:, 0] - 1) * (mu[:, 1] - 1)
+    )
+    out = np.where(np.abs(numerator) < 1e-12, 1.0, 1.0 + numerator / denominator)
+    return np.clip(out, 0.0, 1.0) if cut else out

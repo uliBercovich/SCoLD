@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, Literal, Tuple, DefaultDict, Any
+from typing import Callable, Dict, Iterable, Literal, Optional, Tuple, DefaultDict, Any
 from collections import defaultdict
 
 import numpy as np
@@ -11,7 +11,8 @@ from tqdm import tqdm
 
 
 CalibrationType = Literal["cal", "indep"]
-EstimatorFn = Callable[[np.ndarray], float]  # expects G with shape (n, 2) for a SNP pair
+EstimatorFn = Callable[[np.ndarray], float]          # G shape (n, 2) -> float
+BatchEstimatorFn = Callable[[np.ndarray], np.ndarray]  # G shape (Nrep, n, 2) -> (Nrep,)
 
 
 def generate_genotypes(n: int, pA: float, pB: float, D: float, ploidy: int = 2, pseudohaploid: bool = False, rng: np.random.Generator | None = None):
@@ -89,6 +90,67 @@ def generate_genotypes(n: int, pA: float, pB: float, D: float, ploidy: int = 2, 
     return None
 
 
+def generate_genotypes_batch(
+    Nrep: int,
+    n: int,
+    pA: float,
+    pB: float,
+    D: float,
+    ploidy: int = 2,
+    pseudohaploid: bool = False,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """
+    Vectorized counterpart of generate_genotypes: samples Nrep genotype matrices
+    in a single NumPy call.
+
+    Returns G_batch of shape (Nrep, n, 2). Degenerate samples (zero variance in
+    either column) are not retried — the batch estimators return NaN for those
+    rows, which are excluded when computing the mean across replicates.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+
+    minD = max(-pA * pB, -(1 - pA) * (1 - pB))
+    maxD = min(pA * (1 - pB), (1 - pA) * pB)
+    D = float(np.clip(D, minD, maxD))
+
+    pAB = D + pA * pB
+    pAb = pA - pAB
+    paB = pB - pAB
+    pab = 1 - pAB - pAb - paB
+
+    hap_freqs = np.array([pab, paB, pAb, pAB], dtype=float)
+    hap_freqs = np.maximum(0.0, hap_freqs)
+    hap_freqs /= hap_freqs.sum()
+
+    if pseudohaploid:
+        # (Nrep, n, 2): 2 haplotypes per individual per replicate
+        hap_idx = rng.choice(4, size=(Nrep, n, 2), p=hap_freqs)
+        allelesA = (hap_idx >= 2).astype(np.int8)
+        allelesB = (hap_idx % 2 == 1).astype(np.int8)
+
+        # independently choose one haplotype per site per individual per replicate
+        choiceA = rng.integers(0, 2, size=(Nrep, n))
+        choiceB = rng.integers(0, 2, size=(Nrep, n))
+
+        idx_r = np.arange(Nrep)[:, None]  # (Nrep, 1)
+        idx_n = np.arange(n)[None, :]     # (1, n)
+
+        siteA = allelesA[idx_r, idx_n, choiceA]  # (Nrep, n)
+        siteB = allelesB[idx_r, idx_n, choiceB]  # (Nrep, n)
+        return np.stack([siteA, siteB], axis=2).astype(float)
+
+    # diploid / polyploid: (Nrep, n, ploidy) haplotypes, sum across ploidy axis
+    hap_idx = rng.choice(4, size=(Nrep, n, ploidy), p=hap_freqs)
+    allelesA = (hap_idx >= 2).astype(np.int8)
+    allelesB = (hap_idx % 2 == 1).astype(np.int8)
+
+    return np.stack([
+        allelesA.sum(axis=2),
+        allelesB.sum(axis=2),
+    ], axis=2).astype(float)
+
+
 def _mac_key_from_ps_pt(n: int, ps: float, pt: float, ploidy: int = 2, pseudohaploid: bool = False) -> Tuple[int, int]:
     effective_ploidy = 1 if pseudohaploid else ploidy
     macs = int(round(ps * effective_ploidy * n))
@@ -104,24 +166,36 @@ def _simulate_one_scenario_all_estimators(
     D: float,
     true_r2: float,
     estimators: Dict[str, EstimatorFn],
+    batch_estimators: Optional[Dict[str, BatchEstimatorFn]] = None,
     ploidy: int = 2,
     pseudohaploid: bool = False,
     seed: int | None = None,
 ):
     rng = np.random.default_rng(seed)
+    batch_estimators = batch_estimators or {}
 
-    results_raw: Dict[str, list[float]] = {name: [] for name in estimators.keys()}
+    # Generate all Nrep matrices at once — same data used by all estimators
+    G_batch = generate_genotypes_batch(
+        Nrep, n, ps, pt, D, ploidy=ploidy, pseudohaploid=pseudohaploid, rng=rng,
+    )  # (Nrep, n, 2)
 
-    for _ in range(Nrep):
-        G = generate_genotypes(n, ps, pt, D, ploidy=ploidy, pseudohaploid=pseudohaploid, rng=rng)
-        if G is None:
-            continue
-        for name, fn in estimators.items():
-            r2obs = fn(G)
-            if not np.isnan(r2obs):
-                results_raw[name].append(float(r2obs))
+    results_mean: Dict[str, float] = {}
 
-    results_mean = {name: float(np.mean(vals)) for name, vals in results_raw.items() if len(vals) > 0}
+    for name, fn in estimators.items():
+        if name in batch_estimators:
+            vals = batch_estimators[name](G_batch)          # (Nrep,)
+            mean = float(np.nanmean(vals)) if np.any(~np.isnan(vals)) else None
+        else:
+            # scalar fallback: loop over slices of the shared G_batch
+            scalar_vals = []
+            for i in range(Nrep):
+                v = fn(G_batch[i])
+                if not np.isnan(v):
+                    scalar_vals.append(v)
+            mean = float(np.mean(scalar_vals)) if scalar_vals else None
+
+        if mean is not None:
+            results_mean[name] = mean
 
     mac_key = _mac_key_from_ps_pt(n, ps, pt, ploidy=ploidy, pseudohaploid=pseudohaploid)
     true_r2_bin = round(float(true_r2), 3)
@@ -133,6 +207,7 @@ def build_calibration_models(
     N_replicates: int,
     r2_grid_to_model: np.ndarray,
     estimators_to_calibrate: Dict[str, EstimatorFn],
+    batch_estimators: Optional[Dict[str, BatchEstimatorFn]] = None,
     ploidy: int = 2,
     pseudohaploid: bool = False,
     n_jobs: int = -1,
@@ -189,6 +264,7 @@ def build_calibration_models(
             D,
             true_r2,
             estimators_to_calibrate,
+            batch_estimators=batch_estimators,
             ploidy=ploidy,
             pseudohaploid=pseudohaploid,
             seed=seeds[k],
