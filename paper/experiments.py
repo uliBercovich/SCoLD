@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Sequence, Tuple, Any
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Any
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
+
+from ld_estimates.calibration import generate_genotypes
 
 
 R2Estimator = Callable[[np.ndarray], float]  # expects pair-genotypes (n,2)
@@ -227,3 +229,60 @@ def collect_bias_variance_results(
                     )
 
     return pd.DataFrame.from_records(records)
+
+
+def simulate_bias_curve_data(
+    n: int,
+    p_s: float,
+    p_t: float,
+    r2_grid: np.ndarray,
+    Nrep: int,
+    r2_estimator: R2Estimator,
+    pseudohaploid: bool = False,
+    quantiles: Tuple[float, float] = (0.25, 0.75),
+    seed: int | None = None,
+) -> Tuple[List[float], List[float], List[float], List[float]]:
+    """
+    Simulates the bias curve for one (n, p_s, p_t) scenario.
+
+    Returns (x_coords, y_mean, y_low, y_high) where x is the true ρ² grid,
+    y_mean is the mean observed r² across Nrep replicates, and y_low/y_high
+    are the lower and upper quantile bounds (default 25th–75th percentile).
+    Quantile bounds are naturally asymmetric and stay within [0, 1].
+    Points where the required D is out of range or all replicates fail are skipped.
+
+    Set pseudohaploid=True to use the aDNA pseudohaploid data model.
+    """
+    rng = np.random.default_rng(seed)
+    x_coords: List[float] = []
+    y_mean: List[float] = []
+    y_low: List[float] = []
+    y_high: List[float] = []
+
+    for true_r2 in r2_grid:
+        var_prod = p_s * (1 - p_s) * p_t * (1 - p_t)
+        if var_prod <= 0:
+            continue
+        D_required = float(np.sqrt(true_r2 * var_prod))
+        if D_required < max(-p_s * p_t, -(1 - p_s) * (1 - p_t)) - 1e-8:
+            continue
+        if D_required > min(p_s * (1 - p_t), (1 - p_s) * p_t) + 1e-8:
+            continue
+
+        obs: List[float] = []
+        for _ in range(Nrep):
+            G = generate_genotypes(n, p_s, p_t, D_required, pseudohaploid=pseudohaploid, rng=rng)
+            if G is None:
+                continue
+            val = r2_estimator(G)
+            if not np.isnan(val):
+                obs.append(float(val))
+
+        if obs:
+            arr = np.asarray(obs)
+            x_coords.append(float(true_r2))
+            y_mean.append(float(arr.mean()))
+            y_low.append(float(np.percentile(arr, quantiles[0] * 100)))
+            y_high.append(float(np.percentile(arr, quantiles[1] * 100)))
+
+    return x_coords, y_mean, y_low, y_high

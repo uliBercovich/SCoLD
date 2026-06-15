@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -238,6 +238,87 @@ def plot_metric_distribution(
 
     if outpath:
         plt.savefig(outpath, format=outpath.split(".")[-1], bbox_inches="tight", dpi=300)
+
+    return fig, axes
+
+
+def plot_bias_curves(
+    curves: Dict[str, Dict[int, Tuple[List[float], List[float], List[float], List[float]]]],
+    sample_sizes: Sequence[int],
+    show_spread: bool = False,
+    ylim: Optional[Tuple[float, float]] = (0, 1),
+    outpath: Optional[str] = None,
+) -> Tuple[plt.Figure, np.ndarray]:
+    """
+    Plots bias curves for one or more data types on a shared grid of subplots.
+
+    Parameters
+    ----------
+    curves : dict
+        Mapping of label → {n → (x_data, y_mean, y_low, y_high)}.
+        y_low and y_high are quantile bounds from simulate_bias_curve_data.
+        Example::
+
+            {
+                "Diploid":      {5: (x5, y_mean5, y_low5, y_high5), ...},
+                "Pseudohaploid":{5: (x5, y_mean5, y_low5, y_high5), ...},
+            }
+
+    sample_sizes : sequence of int
+        The n values that define the columns (must match the keys in each
+        inner dict of *curves*).
+
+    show_spread : bool
+        If True, shade the quantile band (y_low, y_high) around each curve.
+        The band is naturally asymmetric and stays within [0, 1].
+
+    outpath : str, optional
+        If given, save to this path (format inferred from extension, dpi=300).
+    """
+    colors = sns.color_palette("tab10", n_colors=len(curves))
+    label_colors = dict(zip(curves.keys(), colors))
+
+    ncols = len(sample_sizes)
+    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 5), sharex=True, sharey=True)
+    if ncols == 1:
+        axes = np.array([axes])
+
+    for j, n in enumerate(sample_sizes):
+        ax = axes[j]
+        ax.plot([0, 1], [0, 1], color="red", linestyle="--", label="Ideal (No Bias)", zorder=1)
+
+        for label, data_by_n in curves.items():
+            if n not in data_by_n:
+                continue
+            x_data, y_mean, y_low, y_high = data_by_n[n]
+            color = label_colors[label]
+            x = np.asarray(x_data)
+
+            ax.plot(x, y_mean, linestyle="-", color=color, label=label, zorder=2)
+            if show_spread:
+                ax.fill_between(
+                    x, y_low, y_high,
+                    color=color,
+                    alpha=0.2,
+                    zorder=1,
+                )
+
+        ax.set_title(f"Sample Size n = {n}", fontsize=18)
+        ax.set_xlim(0, 1)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, linestyle="--", alpha=0.6)
+        ax.tick_params(axis="both", labelsize=14)
+        ax.set_xlabel("True Population ρ²", fontsize=16)
+        if j == 0:
+            ax.set_ylabel("Expected Observed r²", fontsize=16)
+        ax.legend(fontsize=12)
+
+    plt.tight_layout()
+
+    if outpath:
+        plt.savefig(outpath, bbox_inches="tight", dpi=300)
 
     return fig, axes
 
