@@ -394,6 +394,60 @@ def _ld_scores_one_rep(
     return records
 
 
+def compute_f1_by_threshold(
+    results: Dict[int, Dict[int, Dict[int, Dict[str, np.ndarray]]]],
+    n_values: Sequence[int],
+    distance_bins: np.ndarray,
+    r2_estimators: Dict[str, R2Estimator],
+    thresholds: Sequence[float] = (0.2, 0.5, 0.8),
+) -> pd.DataFrame:
+    """
+    F1 score for LD-based classification, reusing the pairs already sampled by
+    run_experiment. For each (rep, n, threshold, method) we pool the pairs across
+    distance bins and treat the task as a binary classification: a pair is a true
+    positive of "high LD" when its population value exceeds the threshold
+    (true_r2 >= thr) and it is predicted positive when the estimated value does
+    (est >= thr). Precision = TP/(TP+FP) tracks over-pruning and recall =
+    TP/(TP+FN) tracks under-pruning; F1 is their harmonic mean. Returns a tidy
+    DataFrame with columns (rep, n, thr, method, f1).
+    """
+    records = []
+    n_bins = len(distance_bins) - 1
+
+    for rep_id, rep_data in results.items():
+        for n in n_values:
+            if n not in rep_data:
+                continue
+
+            # pool pairs across all distance bins for this (rep, n)
+            true_all = np.concatenate(
+                [rep_data[n][b]["true_r2"] for b in range(n_bins)
+                 if b in rep_data[n] and rep_data[n][b].get("true_r2", np.array([])).size]
+            ) if any(b in rep_data[n] for b in range(n_bins)) else np.array([])
+            if true_all.size == 0:
+                continue
+
+            for method in r2_estimators.keys():
+                est_all = np.concatenate(
+                    [rep_data[n][b][method] for b in range(n_bins)
+                     if b in rep_data[n] and rep_data[n][b].get(method, np.array([])).size]
+                )
+                ok = np.isfinite(true_all) & np.isfinite(est_all)
+                t, e = true_all[ok], est_all[ok]
+                for thr in thresholds:
+                    truth = t >= thr
+                    pred = e >= thr
+                    tp = int(np.sum(truth & pred))
+                    fp = int(np.sum(~truth & pred))
+                    fn = int(np.sum(truth & ~pred))
+                    denom = 2 * tp + fp + fn
+                    f1 = (2 * tp / denom) if denom > 0 else np.nan
+                    records.append({"rep": rep_id, "n": int(n), "thr": float(thr),
+                                    "method": method, "f1": f1})
+
+    return pd.DataFrame.from_records(records)
+
+
 def compute_ld_scores(
     G: np.ndarray,
     pos: np.ndarray,
