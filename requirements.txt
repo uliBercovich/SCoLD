@@ -1,10 +1,16 @@
-numpy
-pandas
-scipy
-matplotlib
-seaborn
-tqdm
-joblib
-msprime
-stdpopsim
-magenpy
+# Core: the ld_estimates library, the paper experiments, and the figure notebooks.
+# Version floors are the versions the results were produced with.
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+matplotlib>=3.7
+seaborn>=0.13
+tqdm>=4.65
+joblib>=1.3
+
+# Data regeneration only (paper/gen_*.py); not needed to use SCoLD or run the notebooks,
+# since paper/data/*.npz and paper/output/*.csv are committed.
+magenpy         # 1000 Genomes CEU loader (paper/run_main_experiments.py --pop CEU)
+stdpopsim       # AFR demographic simulation (paper/gen_afr.py)
+msprime         # coalescent backend for stdpopsim
+scikit-allel    # VCF parsing for the structured dataset (paper/gen_1000g_struct.py)
