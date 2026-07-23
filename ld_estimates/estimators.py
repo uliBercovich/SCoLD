@@ -133,7 +133,10 @@ def r2_batch(G_batch: np.ndarray) -> np.ndarray:
     Y = G_batch[:, :, 1] - G_batch[:, :, 1].mean(axis=1, keepdims=True)
     num = (X * Y).sum(axis=1) ** 2
     den = (X ** 2).sum(axis=1) * (Y ** 2).sum(axis=1)
-    return np.where(den > 1e-8, num / den, np.nan)
+    mask = den > 1e-8
+    out = np.full(len(den), np.nan)
+    np.divide(num, den, out=out, where=mask)
+    return out
 
 
 def r2_BS_batch(G_batch: np.ndarray, cut: bool = False) -> np.ndarray:

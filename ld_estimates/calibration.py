@@ -362,3 +362,130 @@ def create_calibrated_estimator(
     calibrated.__name__ = new_name
     calibrated.__doc__ = f"{calibration_type} calibrated version of {estimator_name} ({data_desc})"
     return calibrated
+
+
+# ---------------------------------------------------------------------------
+# Flexible second-step calibration on top of Cal
+#
+# The "indep" step (mCal) corrects Cal with the one-parameter map
+# h(x) = 1 - c(1-x), anchored at rho2=0. Here we generalize it to a
+# degree-`degree` polynomial h(Cal) fit per MAC key by MOMENT MATCHING, so
+# that E[h(Cal) | rho2] = rho2 holds across the whole rho2 grid rather than
+# only at independence. mCal is the degree-1, single-anchor special case.
+# ---------------------------------------------------------------------------
+
+def _fit_flex_one_mac(
+    n: int,
+    macs: int,
+    mact: int,
+    cal_estimator: EstimatorFn,
+    r2_grid: np.ndarray,
+    N_replicates: int,
+    degree: int,
+    ridge: float,
+    ploidy: int,
+    pseudohaploid: bool,
+    seed: int,
+):
+    """Fit the flexible polynomial for a single MAC pair. Returns (mac_key, coeffs) or None."""
+    rng = np.random.default_rng(seed)
+    effective_ploidy = 1 if pseudohaploid else ploidy
+    ps = macs / (effective_ploidy * n)
+    pt = mact / (effective_ploidy * n)
+
+    var_prod = ps * (1 - ps) * pt * (1 - pt)
+    if var_prod <= 0:
+        return None
+
+    rows, targets = [], []
+    for true_r2 in r2_grid:
+        D = float(np.sqrt(true_r2 * var_prod))
+        maxD = float(min(ps * (1 - pt), (1 - ps) * pt))
+        if D > maxD + 1e-6:
+            continue
+        G_batch = generate_genotypes_batch(
+            N_replicates, n, ps, pt, D, ploidy=ploidy, pseudohaploid=pseudohaploid, rng=rng,
+        )
+        vals = np.array([cal_estimator(G_batch[i]) for i in range(N_replicates)])
+        vals = vals[~np.isnan(vals)]
+        if vals.size < 40:
+            continue
+        # moment row: [E[Cal^0], E[Cal^1], ..., E[Cal^degree]]
+        rows.append([float(np.mean(vals ** j)) for j in range(degree + 1)])
+        targets.append(float(true_r2))
+
+    if len(targets) < degree + 2:
+        return None
+
+    A = np.asarray(rows)
+    y = np.asarray(targets)
+    # ridge on non-intercept coefficients only
+    R = np.diag([0.0] + [1.0] * degree)
+    coeffs = np.linalg.solve(A.T @ A + ridge * R, A.T @ y)
+    return tuple(sorted((int(macs), int(mact)))), coeffs
+
+
+def build_flex_models(
+    n: int,
+    cal_estimator: EstimatorFn,
+    r2_grid: np.ndarray,
+    N_replicates: int = 2000,
+    degree: int = 2,
+    ridge: float = 1e-3,
+    ploidy: int = 2,
+    pseudohaploid: bool = False,
+    n_jobs: int = -1,
+    seed: int = 0,
+) -> Dict[Tuple[int, int], np.ndarray]:
+    """
+    Fit a flexible degree-`degree` second-step calibration h(Cal) per MAC key,
+    for a single sample size n, by moment matching E[h(Cal) | rho2] = rho2.
+
+    `cal_estimator` is the (already Cal-calibrated) estimator G -> float.
+    Returns {mac_key: coeff_array} with coeffs in increasing power order
+    (deploy with create_flex_estimator). Generalizes the one-parameter mCal step.
+    """
+    effective_ploidy = 1 if pseudohaploid else ploidy
+    mac_values = np.arange(1, effective_ploidy * n // 2 + 1)
+    pairs = [(int(a), int(b)) for i, a in enumerate(mac_values) for b in mac_values[i:]]
+
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_fit_flex_one_mac)(
+            n, a, b, cal_estimator, r2_grid, N_replicates, degree, ridge,
+            ploidy, pseudohaploid, seed + k,
+        )
+        for k, (a, b) in enumerate(pairs)
+    )
+    return {res[0]: res[1] for res in results if res is not None}
+
+
+def create_flex_estimator(
+    cal_estimator: EstimatorFn,
+    flex_master: Dict[int, Dict[Tuple[int, int], np.ndarray]],
+    ploidy: int = 2,
+    pseudohaploid: bool = False,
+) -> EstimatorFn:
+    """
+    Returns G -> flexibly-calibrated r2 using flex_master[n][mac_key] coefficients
+    (from build_flex_models). Falls back to the plain Cal value when no polynomial
+    is available for the sample size / MAC pair.
+    """
+    def flex(G: np.ndarray) -> float:
+        n = int(G.shape[0])
+        c = float(cal_estimator(G))
+        if np.isnan(c):
+            return np.nan
+        model = flex_master.get(n)
+        if not model:
+            return c
+        effective_ploidy = 1 if pseudohaploid else ploidy
+        macs = int(min(np.sum(G[:, 0]), effective_ploidy * n - np.sum(G[:, 0])))
+        mact = int(min(np.sum(G[:, 1]), effective_ploidy * n - np.sum(G[:, 1])))
+        coef = model.get(tuple(sorted((macs, mact))))
+        if coef is None:
+            return c
+        return float(np.polyval(coef[::-1], c))
+
+    flex.__name__ = "r2_cal_flex"
+    flex.__doc__ = "flexible polynomial second-step calibration on top of Cal"
+    return flex

@@ -6,6 +6,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FixedLocator, FixedFormatter, MaxNLocator
 
@@ -314,6 +315,151 @@ def plot_bias_curves(
         if j == 0:
             ax.set_ylabel("Expected Observed r²", fontsize=16)
         ax.legend(fontsize=12)
+
+    plt.tight_layout()
+
+    if outpath:
+        plt.savefig(outpath, bbox_inches="tight", dpi=300)
+
+    return fig, axes
+
+
+def plot_bias_curves_single_panel(
+    curves: Dict[str, Dict[int, Tuple[List[float], List[float], List[float], List[float]]]],
+    sample_sizes: Sequence[int],
+    show_spread: bool = False,
+    ylim: Optional[Tuple[float, float]] = (0, 1),
+    linestyles: Optional[Dict[str, str]] = None,
+    equal_aspect: bool = True,
+    outpath: Optional[str] = None,
+) -> Tuple[plt.Figure, plt.Axes]:
+    """
+    Plots all bias curves on a single axes: sample size is encoded by colour and
+    the data type (the keys of *curves*) by line style.
+
+    Same input format as plot_bias_curves. With a single key this collapses to
+    one curve per sample size, which is the layout used for the main-text figure.
+
+    Set equal_aspect=False when the y-range is wider than the x-range, e.g. for
+    estimators that are not bounded by 1.
+    """
+    colors = sns.color_palette("colorblind", n_colors=len(sample_sizes))
+    n_colors = dict(zip(sample_sizes, colors))
+
+    default_styles = ["-", "--", ":", "-."]
+    if linestyles is None:
+        linestyles = {label: default_styles[i % len(default_styles)] for i, label in enumerate(curves)}
+
+    fig, ax = plt.subplots(figsize=(7, 6.5))
+    ax.plot([0, 1], [0, 1], color="red", linestyle="--", linewidth=1.5, zorder=1)
+
+    for label, data_by_n in curves.items():
+        for n in sample_sizes:
+            if n not in data_by_n:
+                continue
+            x_data, y_mean, y_low, y_high = data_by_n[n]
+            x = np.asarray(x_data)
+            color = n_colors[n]
+
+            ax.plot(
+                x, y_mean,
+                linestyle=linestyles[label],
+                color=color,
+                linewidth=2,
+                zorder=3,
+            )
+            if show_spread:
+                ax.fill_between(x, y_low, y_high, color=color, alpha=0.15, zorder=2)
+
+    # Legend: one entry per sample size (colour), one per data type (style),
+    # plus the identity line. Styles are only listed when there is more than one.
+    handles = [Line2D([0], [0], color="red", linestyle="--", label="Ideal (no bias)")]
+    handles += [
+        Line2D([0], [0], color=n_colors[n], linestyle="-", linewidth=2, label=f"n = {n}")
+        for n in sample_sizes
+    ]
+    if len(curves) > 1:
+        handles += [
+            Line2D([0], [0], color="grey", linestyle=linestyles[label], linewidth=2, label=label)
+            for label in curves
+        ]
+
+    ax.set_xlim(0, 1)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    if equal_aspect:
+        ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.tick_params(axis="both", labelsize=13)
+    ax.set_xlabel("True population ρ²", fontsize=15)
+    ax.set_ylabel("Expected observed r²", fontsize=15)
+    ax.legend(handles=handles, fontsize=12, loc="upper left", framealpha=0.9)
+
+    plt.tight_layout()
+
+    if outpath:
+        plt.savefig(outpath, bbox_inches="tight", dpi=300)
+
+    return fig, ax
+
+
+def plot_bias_and_variance_panels(
+    metrics: Dict[int, Tuple[List[float], List[float], List[float], List[float]]],
+    sample_sizes: Sequence[int],
+    outpath: Optional[str] = None,
+) -> Tuple[plt.Figure, np.ndarray]:
+    """
+    Two-panel main-text figure, with one line per sample size in each panel.
+
+    metrics maps n -> (x, bias, variance, rmse), as returned by
+    simulate_metrics_curve. The left panel shows the bias curve, i.e. the
+    expected observed r² (= bias + ρ²) against the true ρ², together with the
+    identity line. The right panel shows the variance of r² against the true ρ².
+
+    The identity line is solid, and each sample size is a dashed line carrying its
+    own marker shape as well as its own colour, so the curves stay distinguishable
+    for colour-blind readers and in greyscale print.
+    """
+    colors = sns.color_palette("colorblind", n_colors=len(sample_sizes))
+    n_colors = dict(zip(sample_sizes, colors))
+
+    markers = ["o", "s", "^", "D", "v"]
+    n_markers = {n: markers[i % len(markers)] for i, n in enumerate(sample_sizes)}
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.6))
+    ax_bias, ax_var = axes
+
+    ax_bias.plot([0, 1], [0, 1], color="red", linestyle="-", linewidth=1.8,
+                 label="Ideal (no bias)", zorder=1)
+
+    style = dict(linestyle="--", linewidth=1.8, markersize=7,
+                 markeredgecolor="white", markeredgewidth=0.7, zorder=3)
+
+    for n in sample_sizes:
+        x, bias, var, _ = metrics[n]
+        x = np.asarray(x)
+        mean_obs = np.asarray(bias) + x
+
+        ax_bias.plot(x, mean_obs, color=n_colors[n], marker=n_markers[n],
+                     label=f"n = {n}", **style)
+        ax_var.plot(x, np.asarray(var), color=n_colors[n], marker=n_markers[n],
+                    label=f"n = {n}", **style)
+
+    ax_bias.set_ylabel("Expected observed r²", fontsize=15)
+    ax_bias.set_ylim(0, 1)
+    ax_bias.set_aspect("equal", adjustable="box")
+    ax_bias.set_title("Bias", fontsize=16)
+
+    ax_var.set_ylabel("Variance of r²", fontsize=15)
+    ax_var.set_ylim(bottom=0)
+    ax_var.set_title("Variance", fontsize=16)
+
+    for ax in axes:
+        ax.set_xlim(0, 1)
+        ax.grid(True, linestyle="--", alpha=0.6)
+        ax.tick_params(axis="both", labelsize=13)
+        ax.set_xlabel("True population ρ²", fontsize=15)
+        ax.legend(fontsize=12, framealpha=0.9)
 
     plt.tight_layout()
 

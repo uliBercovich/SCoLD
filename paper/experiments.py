@@ -231,6 +231,59 @@ def collect_bias_variance_results(
     return pd.DataFrame.from_records(records)
 
 
+def simulate_metrics_curve(
+    n: int,
+    p_s: float,
+    p_t: float,
+    r2_grid: np.ndarray,
+    Nrep: int,
+    r2_estimator: R2Estimator,
+    pseudohaploid: bool = False,
+    seed: int | None = None,
+) -> Tuple[List[float], List[float], List[float], List[float]]:
+    """
+    Simulates bias, variance, and RMSE of r2_estimator relative to true ρ².
+
+    Returns (x_coords, bias, variance, rmse) for each reachable point in
+    r2_grid. bias = E[estimator(G)] - true_ρ².
+    """
+    rng = np.random.default_rng(seed)
+    x_coords: List[float] = []
+    bias_list: List[float] = []
+    var_list:  List[float] = []
+    rmse_list: List[float] = []
+
+    for true_r2 in r2_grid:
+        var_prod = p_s * (1 - p_s) * p_t * (1 - p_t)
+        if var_prod <= 0:
+            continue
+        D_required = float(np.sqrt(true_r2 * var_prod))
+        if D_required < max(-p_s * p_t, -(1 - p_s) * (1 - p_t)) - 1e-8:
+            continue
+        if D_required > min(p_s * (1 - p_t), (1 - p_s) * p_t) + 1e-8:
+            continue
+
+        obs: List[float] = []
+        for _ in range(Nrep):
+            G = generate_genotypes(n, p_s, p_t, D_required, pseudohaploid=pseudohaploid, rng=rng)
+            if G is None:
+                continue
+            val = r2_estimator(G)
+            if not np.isnan(val):
+                obs.append(float(val))
+
+        if obs:
+            arr = np.asarray(obs)
+            b = float(arr.mean()) - float(true_r2)
+            v = float(arr.var())
+            x_coords.append(float(true_r2))
+            bias_list.append(b)
+            var_list.append(v)
+            rmse_list.append(float(np.sqrt(b ** 2 + v)))
+
+    return x_coords, bias_list, var_list, rmse_list
+
+
 def simulate_bias_curve_data(
     n: int,
     p_s: float,
@@ -286,3 +339,82 @@ def simulate_bias_curve_data(
             y_high.append(float(np.percentile(arr, quantiles[1] * 100)))
 
     return x_coords, y_mean, y_low, y_high
+
+
+def _ld_scores_one_rep(
+    rep_id: int,
+    n_values: Sequence[int],
+    G: np.ndarray,
+    pos: np.ndarray,
+    r2_estimators: Dict[str, R2Estimator],
+    n_variants: int,
+    window_bp: float,
+    base_seed: int,
+) -> list[dict]:
+    """
+    One LD-score replication. For each n, subsample individuals, pick target
+    variants, and compute each variant's LD score = sum of r^2 with neighbours
+    within +/- window_bp. Ground truth uses the FULL sample; estimates use the
+    subsample. Returns per-(n, method) RMSE across the sampled target variants.
+    """
+    rng = np.random.default_rng(base_seed + rep_id)
+    pos = np.asarray(pos)
+    n_samples, _ = G.shape
+    records = []
+
+    for n in n_values:
+        idx_sub = rng.choice(n_samples, size=int(n), replace=False)
+        G_sub = G[idx_sub, :]
+        idx_v = np.where(variance_filter(G_sub))[0]
+        if idx_v.size == 0:
+            continue
+
+        n_take = min(n_variants, idx_v.size)
+        targets = rng.choice(idx_v, size=n_take, replace=False)
+
+        true_scores = np.zeros(n_take)
+        est_scores = {m: np.zeros(n_take) for m in r2_estimators}
+
+        for t, j in enumerate(targets):
+            in_win = idx_v[(np.abs(pos[idx_v] - pos[j]) <= window_bp) & (idx_v != j)]
+            for k in in_win:
+                tr = compute_true_r2(G[:, j], G[:, k])
+                if not np.isnan(tr):
+                    true_scores[t] += tr
+                pair = np.column_stack([G_sub[:, j], G_sub[:, k]])
+                for m, fn in r2_estimators.items():
+                    v = fn(pair)
+                    if not np.isnan(v):
+                        est_scores[m][t] += v
+
+        for m in r2_estimators:
+            rmse = float(np.sqrt(np.mean((est_scores[m] - true_scores) ** 2)))
+            records.append({"rep": rep_id, "n": int(n), "method": m, "rmse": rmse})
+
+    return records
+
+
+def compute_ld_scores(
+    G: np.ndarray,
+    pos: np.ndarray,
+    r2_estimators: Dict[str, R2Estimator],
+    n_values: Sequence[int],
+    n_variants: int = 1000,
+    n_reps: int = 50,
+    window_bp: float = 500_000,
+    seed: int = 42,
+    n_jobs: int = -1,
+) -> pd.DataFrame:
+    """
+    LD-score RMSE experiment (mirrors Supplementary Section S3). Returns a tidy
+    DataFrame with columns (rep, n, method, rmse), one row per replicate/sample
+    size/estimator, ready for plot_metric_distribution.
+    """
+    out = Parallel(n_jobs=n_jobs)(
+        delayed(_ld_scores_one_rep)(
+            rep_id, n_values, G, pos, r2_estimators, n_variants, window_bp, seed,
+        )
+        for rep_id in range(n_reps)
+    )
+    records = [r for rep in out for r in rep]
+    return pd.DataFrame.from_records(records)
